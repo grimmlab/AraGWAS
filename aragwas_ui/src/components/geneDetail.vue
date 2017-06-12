@@ -17,15 +17,12 @@
                 </div>
                 <div class="flex"></div>
                 <div style="width:300px;" class="gene-zoom">
-                    <v-slider v-model="zoom" prepend-icon="zoom_in" permanent-hint hint="Zoom" :min="min" ></v-slider>
-                </div>
+                    <v-slider v-model="zoom" prepend-icon="zoom_in" permanent-hint hint="Zoom" max="20" min="0"  ></v-slider>
             </v-layout>
             </div>
         </v-flex>
-        <v-flex xs12 class="pl-4 pr-4">
-            <div class="container">
-                <gene-plot class="flex gene-plot" :options="options"></gene-plot>
-            </div>
+        <v-flex xs12>
+            <gene-plot class="flex" :genes="genes" :options="options"></gene-plot>
         </v-flex>
         <v-flex xs12 class="pl-4 pr-4">
             <div class="container">
@@ -47,8 +44,8 @@
     import Router from "../router";
     import TopAssociationsComponent from "./topasso.vue"
 
-    import {loadAssociationsOfGene, loadGene} from "../api";
-    import Gene from "../models/gene";
+    import {loadAssociationsOfGene, loadGene, loadGenesByRegion} from "../api";
+    import Gene, {GenePlotOptions} from "../models/gene";
 
     import tourMixin from "../mixins/tour.js";
 
@@ -74,11 +71,11 @@
         selectedGene: Gene = {id: '', name: '', strand: '',chr: '', type: '', positions: {gte: 0, lte: 0 }}
         searchTerm: string = "";
         associationCount = 0;
-        min = 10;
+        genes: Gene[] = [];
 
         // Associations parameters
         ordered: string;
-        zoom = 75;
+        zoom = 10;
         pageCount = 5;
         currentPage = 1;
         totalCount = 0;
@@ -97,15 +94,26 @@
         filters = {chr: this.chr, annotation: this.annotation, maf: this.maf, type: this.type};
         geneView = {name: "gene", geneId: this.geneId, zoom: this.zoom};
 
-        get options() {
-            return {
-                width: 1000,
-                min_x: 1200000,
-                max_x: 1289300,
-                gene: this.selectedGene,
-                w_rect: 0,
-                zoom: this.zoom,
-            };
+
+        get startRegion(): number  {
+            if (this.selectedGene) {
+                return this.selectedGene.positions.gte - this.zoom * 1000 / 2;
+            }
+            return 0;
+        }
+        get endRegion(): number   {
+            if (this.selectedGene) {
+                return this.selectedGene.positions.lte + this.zoom * 1000 / 2 ;
+            }
+            return 0;
+        }
+
+        get options(): GenePlotOptions {
+            const zoom = this.zoom * 1000 / 2;
+            const chr = this.selectedGene.chr;
+            const maxScore = 15;
+            const bonferoniThreshold = 5;
+            return new GenePlotOptions(chr, this.startRegion, this.endRegion, maxScore, bonferoniThreshold);
         }
 
         get breadcrumbs() {
@@ -116,12 +124,18 @@
         onSelectedGeneChanged(val, oldVal) {
             if (oldVal === null || val.id !== oldVal.id) {
                 this.$router.push({ name: 'geneDetail', params: { geneId: val.id }})
+                this.loadGenesInRegion();
             }
         }
 
         @Watch("geneId")
         onGeneIdChanged(val: number, oldVal: number) {
             this.loadData();
+        }
+
+        @Watch("zoom")
+        onZoomChanged() {
+            this.loadGenesInRegion();
         }
 
         created(): void {
@@ -137,10 +151,25 @@
         loadData(): void {
             // Load associations of all cited SNPs
             try {
-                loadGene(this.geneId).then(this._displayGeneData);
+                loadGene(this.geneId)
+                    .then((gene) => {
+                        this.selectedGene = gene
+                });
+                //loadAssociationsOfGene(this.geneId, this.currentPage, this.ordered).then(this._displayData);
             } catch (err) {
                 console.log(err);
             }
+        }
+
+        loadGenesInRegion(): void {
+            loadGenesByRegion(this.selectedGene.chr, this.startRegion, this.endRegion, true).then( (genes) => this.genes = genes);
+        }
+
+        _displayData(data): void {
+            this.associations = data.results;
+            this.currentPage = data.current_page;
+            this.totalCount = data.count;
+            this.pageCount = data.page_count;
         }
         goToGene(): void {
             this.router.push({name: "geneDetail", params: { geneId: this.searchTerm }});

@@ -96,6 +96,12 @@ export async function loadSimilarPhenotypes(phenotypeId: number) {
         .then(convertToModel);
 }
 
+export async function loadGenesByRegion(chr: string, start: number, end: number, features: boolean): Promise<Gene[]> {
+    return fetch(`/api/genes/${chr}/${start}/${end}` + (features ? "?features" : ""))
+        .then(checkStatus)
+        .then(convertToModel);
+}
+
 // Gene list
 export async function loadGenes(page: number = 1, ordering= "") {
     return fetch(`/api/genes/?page=${page}&ordering=${ordering}`)
