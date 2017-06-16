@@ -157,6 +157,11 @@
         onTypeChanged(val: number, oldVal: number) {
             this.loadData(this.currentPage);
         }
+        @Watch("view")
+        onViewChanged() {
+            console.log("viewChanged");
+            this.loadData(this.currentPage);
+        }
         mounted(): void {
             this.hideHeaders(this.hideFields);
             this.loadData(this.currentPage);

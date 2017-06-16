@@ -18,6 +18,7 @@
                 <div class="flex"></div>
                 <div style="width:300px;" class="gene-zoom">
                     <v-slider v-model="zoom" prepend-icon="zoom_in" permanent-hint hint="Zoom" max="20" min="0"  ></v-slider>
+                </div>
             </v-layout>
             </div>
         </v-flex>
@@ -31,7 +32,7 @@
                     <top-associations :showControls="showControls" :filters="filters" :hideFields="hideFields" :view="geneView"></top-associations>
             </div>
         </v-flex>
-    </v-layout>
+    </v-layout >
 </template>
 
 <script lang="ts">
@@ -48,6 +49,8 @@
     import Gene, {GenePlotOptions} from "../models/gene";
 
     import tourMixin from "../mixins/tour.js";
+
+    import _ from "lodash";
 
     @Component({
         filters: {
@@ -92,8 +95,8 @@
 //        TODO: add position in filter for associations listing.
         showControls = ["maf","annotation","type"];
         filters = {chr: this.chr, annotation: this.annotation, maf: this.maf, type: this.type};
-        geneView = {name: "gene", geneId: this.geneId, zoom: this.zoom};
 
+        deboundedLoadGenes = _.debounce(this.loadGenesInRegion, 300);
 
         get startRegion(): number  {
             if (this.selectedGene) {
@@ -120,6 +123,10 @@
             return [{text: "Home", href: "/"}, {text: "Genes", href: "genes", disabled: true}, {text: this.selectedGene ? this.selectedGene.id : "", href: "", disabled: true}];
         }
 
+        get geneView() {
+            return {name: "gene", geneId: this.geneId, zoom: this.zoom * 1000};
+        }
+
         @Watch("selectedGene")
         onSelectedGeneChanged(val, oldVal) {
             if (oldVal === null || val.id !== oldVal.id) {
@@ -135,7 +142,7 @@
 
         @Watch("zoom")
         onZoomChanged() {
-            this.loadGenesInRegion();
+            this.deboundedLoadGenes();
         }
 
         created(): void {
@@ -155,7 +162,6 @@
                     .then((gene) => {
                         this.selectedGene = gene
                 });
-                //loadAssociationsOfGene(this.geneId, this.currentPage, this.ordered).then(this._displayData);
             } catch (err) {
                 console.log(err);
             }

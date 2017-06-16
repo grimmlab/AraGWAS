@@ -121,10 +121,10 @@ export async function loadGene(geneId = ""): Promise<Gene> {
         .then(checkStatus)
         .then(convertToModel);
 }
-export async  function loadAssociationsOfGene(geneId= "1", zoom: number, filter, page: number = 1) {
+export async  function loadAssociationsOfGene(geneId, zoom: number, filter, page: number = 1) {
     const queryParam = getTopAssociationsParametersQuery(filter);
     const offset = 25 * (page - 1);
-    let url = `/api//genes/${geneId}/associations/?limit=25&offset=${offset}zoom=${zoom}`;
+    let url = `/api//genes/${geneId}/associations/?limit=25&offset=${offset}&zoom=${zoom}`;
     if (queryParam) {
         url += queryParam;
     }
