@@ -1,6 +1,8 @@
+import Accession from "../models/accession";
 import ApiVersion from "../models/apiversion";
 import Association from "../models/association";
 import Gene from "../models/gene";
+import KOAssociation from "../models/koassociation";
 import Page from "../models/page";
 import Study from "../models/study";
 
@@ -70,7 +72,7 @@ export async function loadStudies(page: number = 1, ordering = ""): Promise<Stud
 
 // Import single study information
 export async function loadStudy(studyId: number): Promise<Study> {
-    return fetch(`/api/studies/${studyId}`)
+    return fetch(`/api/studies/${studyId}/`)
         .then(checkStatus)
         .then<Study>(convertToModel);
 }
@@ -107,6 +109,12 @@ export async function loadAssociationsForManhattan(studyId: number) {
         .then(checkStatus)
         .then(convertToModel);
 }
+// Load ko associations for manhattan plots
+export async function loadKOAssociationsForManhattan(studyId: number) {
+    return fetch(`/api/studies/${studyId}/ko_mutations/`)
+        .then(checkStatus)
+        .then(convertToModel);
+}
 
 // Phenotype list
 export async function loadPhenotypes(page: number = 1, ordering= "") {
@@ -117,7 +125,7 @@ export async function loadPhenotypes(page: number = 1, ordering= "") {
 
 // Import single phenotype information
 export async  function loadPhenotype(phenotypeId: number) {
-    return fetch(`/api/phenotypes/${phenotypeId}`)
+    return fetch(`/api/phenotypes/${phenotypeId}/`)
         .then(checkStatus)
         .then(convertToModel);
 }
@@ -213,6 +221,23 @@ export async function loadTopAssociations(filter, page, lastElement = [0, ""]): 
         .then(checkStatus)
         .then<Association[]>(convertToModel);
 }
+export async function loadTopKOMutations(filter, page, limit, lastElement = [0, ""]): Promise<KOAssociation[]> {
+    const queryParam = getTopAssociationsParametersQuery(filter);
+    const offset = limit * ( page - 1);
+    let url = `/api/koassociations/`;
+    if (lastElement[0] !== 0) {
+        url += "?lastel=" + lastElement[0].toString() + "," + lastElement[1] + `&limit=${limit}`;
+    } else {
+        url += `?limit=${limit}&offset=${offset}`;
+    }
+    if (queryParam) {
+        url += queryParam;
+    }
+    return fetch(url)
+        .then(checkStatus)
+        .then<KOAssociation[]>(convertToModel);
+}
+
 export async  function loadTopAggregatedStatistics(filter) {
     const queryParam = getTopAssociationsParametersQuery(filter);
     let url = `/api/associations/aggregated_statistics/?`;
@@ -223,10 +248,15 @@ export async  function loadTopAggregatedStatistics(filter) {
         .then(checkStatus)
         .then(convertToModel);
 }
-export async function loadTopGenesList(filter, page: number = 1, pageSize: number = 25) {
+export async function loadTopGenesList(filter, page: number = 1, pageSize: number = 25, KO: boolean = false) {
     const queryParam = getTopAssociationsParametersQuery(filter);
     const offset = pageSize * (page - 1);
-    let url = `/api/genes/top_list/?limit=${pageSize}&offset=${offset}`;
+    let url: string;
+    if (KO) {
+        url = `/api/genes/top_ko_list/?limit=${pageSize}&offset=${offset}`;
+    } else {
+        url = `/api/genes/top_list/?limit=${pageSize}&offset=${offset}`;
+    }
     if (queryParam) {
         url += queryParam;
     }
@@ -283,6 +313,19 @@ export async  function loadApiVersion(): Promise<ApiVersion> {
         .then(checkStatus)
         .then<ApiVersion>(convertToModel);
 }
+
+export async function loadAssociation(id: string): Promise<Association> {
+    return fetch(`/api/associations/${id}/`)
+        .then(checkStatus)
+        .then<Association>(convertToModel);
+}
+
+export async function loadAssociationDetails(id: string): Promise<Accession> {
+    return fetch(`/api/associations/${id}/details`)
+    .then(checkStatus)
+    .then<Accession>(convertToModel);
+}
+
 export async function loadAssociationsHeatmap(): Promise<Array<{}>> {
     return fetch(`/api/associations/map_heat/`)
         .then(checkStatus)
@@ -308,3 +351,9 @@ export async function loadAssociationsHistogramZoomed(region=[0,0,0], regionWidt
         .then(checkStatus)
         .then<Array<{}>>(convertToModel);
 }
+// export async function loadAssociation(): Promise<Association> {
+//     return fetch(`/api/associations/map_heat/`)
+//         .then(checkStatus)
+//         .then<Array<{}>>(convertToModel);
+// }
+// TODO: implement rest functions for association retrieval.

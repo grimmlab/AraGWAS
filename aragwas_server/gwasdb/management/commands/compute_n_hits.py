@@ -50,13 +50,13 @@ class Command(BaseCommand):
                 try:
                     study = Study.objects.get(pk=id)
                     if study.n_hits_bonf == None or update_all or study_id: # Condition for first run through, might be changed to update all
-                        hdf5_file = os.path.join(settings.HDF5_FILE_PATH, '%s.hdf5' % study.pk)
+                        hdf5_file = os.path.join(settings.HDF5_FILE_PATH, 'gwas_results', '%s.hdf5' % study.pk)
                         perm_threshold = None
                         if permutation_thresholds:
                             perm_threshold = permutation_thresholds[study.pk]
                         hits, thresholds = get_hit_count(hdf5_file, maf=maf, perm_threshold=perm_threshold)
                         study.n_hits_bonf = hits['bonferroni_hits05']
-                        study.n_hits_top = hits['thr_e-4']
+                        study.n_hits_thr = hits['thr_e-4']
                         study.n_hits_fdr = hits['bh_hits']
                         study.bonferroni_threshold = thresholds['bonferroni_threshold05']
                         study.bh_threshold = thresholds['bh_threshold']
@@ -65,6 +65,7 @@ class Command(BaseCommand):
                             study.n_hits_perm = hits['permutation_hits']
                             study.permutation_threshold = thresholds['permutation']
                         study.save()
+                        self.stdout.write(self.style.SUCCESS('Study %s successfully updated' % study))
                         counter +=1
                 except Exception as err:
                     self.stdout.write(self.style.ERROR('HDF5 file for study %s not found' % study))

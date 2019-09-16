@@ -1,4 +1,6 @@
 import os, coreapi, coreschema
+import requests
+import numpy as np
 
 from rest_framework import permissions
 from rest_framework import viewsets, generics, filters, renderers
@@ -21,7 +23,8 @@ from rest_framework.decorators import api_view, permission_classes, detail_route
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticatedOrReadOnly, AllowAny
 from rest_framework.settings import api_settings
-from gwasdb.hdf5 import get_top_associations, regroup_associations
+from rest_framework_csv import renderers as r
+from gwasdb.hdf5 import get_top_associations, regroup_associations, get_ko_associations, get_snps_from_genotype
 
 from gwasdb.tasks import compute_ld, download_es2csv
 from gwasdb import __version__, __date__, __githash__,__build__, __buildurl__
@@ -104,6 +107,11 @@ def _is_filter_whole_dataset(filters):
             return False
     return True
 
+
+def get_accession_phenotype_values(phenotype_id):
+    r = requests.get('https://arapheno.1001genomes.org:443/rest/phenotype/{}/values.json'.format(phenotype_id))
+    js = r.json()
+    return js
 
 class EsQuerySet(object):
 
@@ -199,6 +207,16 @@ class GenotypeViewSet(viewsets.ReadOnlyModelViewSet):
     def filter_queryset(self, queryset):
         return queryset
 
+    @list_route(methods=['GET'], url_path='download')
+    def download(self, request):
+        """Download the SNP matrix used for GWAS analyses"""
+        bulk_file = "%s/genotype.zip" % (settings.HDF5_FILE_PATH)
+        chunk_size = 8192
+        response = StreamingHttpResponse(FileWrapper(open(bulk_file,"rb"), chunk_size),content_type="application/x-zip")
+        response['Content-Length'] = os.path.getsize(bulk_file)
+        response['Content-Disposition'] = "attachment; filename=genotype.zip"
+        return response
+
 class StudyViewSet(viewsets.ReadOnlyModelViewSet):
     """
     API for studies
@@ -241,16 +259,27 @@ class StudyViewSet(viewsets.ReadOnlyModelViewSet):
                 queryset = queryset.reverse()
         return queryset
 
+
+
     @detail_route(methods=['GET'], url_path='download')
     def download(self, request, pk):
         """Download the HDF5 file for the specific study. """
-        study_file = "%s/%s.hdf5" % (settings.HDF5_FILE_PATH, pk)
+        study_file = "%s/gwas_results/%s.hdf5" % (settings.HDF5_FILE_PATH, pk)
         chunk_size = 8192
         response = StreamingHttpResponse(FileWrapper(open(study_file,"rb"), chunk_size),content_type="application/x-hdf5")
         response['Content-Length'] = os.path.getsize(study_file)
         response['Content-Disposition'] = "attachment; filename=%s.hdf5" % pk
         return response
 
+    @list_route(methods=['GET'], url_path='bulk_download')
+    def bulkdownload(self, request):
+        """Download all the compressed HDF5 files. """
+        bulk_file = "%s/aragwas_db.zip" % (settings.HDF5_FILE_PATH)
+        chunk_size = 8192
+        response = StreamingHttpResponse(FileWrapper(open(bulk_file,"rb"), chunk_size),content_type="application/x-zip")
+        response['Content-Length'] = os.path.getsize(bulk_file)
+        response['Content-Disposition'] = "attachment; filename=aragwas_db.zip"
+        return response
 
     @detail_route(methods=['GET'], url_path='associations')
     def top_associations(self, request, pk):
@@ -290,13 +319,33 @@ class StudyViewSet(viewsets.ReadOnlyModelViewSet):
         if filter_type == 'top':
             threshold_or_top = int(threshold_or_top)
 
-        association_file = os.path.join(settings.HDF5_FILE_PATH, '%s.hdf5' % pk)
+        association_file = os.path.join(settings.HDF5_FILE_PATH, 'gwas_results', '%s.hdf5' % pk)
         top_associations, thresholds = get_top_associations(association_file, maf=0, val=threshold_or_top, top_or_threshold=filter_type)
         output = {}
         prev_idx = 0
         for chrom in range(1, 6):
             chr_idx = top_associations['chr'].searchsorted(str(chrom+1))
             output['chr%s' % chrom] = {'scores': top_associations['score'][prev_idx:chr_idx], 'positions': top_associations['position'][prev_idx:chr_idx], 'mafs': top_associations['maf'][prev_idx:chr_idx]}
+            prev_idx = chr_idx
+        for key, value in thresholds.items():
+            value = int(value) if key == 'total_associations' else float(value)
+            thresholds[key] = value
+        output['thresholds'] = thresholds
+        return Response(output, status=status.HTTP_200_OK)
+
+    @detail_route(methods=['GET'], url_path='ko_mutations')
+    def ko_assocations_from_csv(self, request, pk):
+        """ Retrieve KO associations from the csv file of the study."""
+        ko_association_file = os.path.join(settings.HDF5_FILE_PATH,'ko', 'LOS%s.csv' % pk)
+        ko_associations, thresholds = get_ko_associations(ko_association_file)
+        output = {}
+        prev_idx = 0
+        for chrom in range(1, 6):
+            chr_idx = ko_associations['chr'].searchsorted(str(chrom+1))
+            output['chr%s' % chrom] = {'genes': ko_associations['gene'][prev_idx:chr_idx],
+                'scores': ko_associations['score'][prev_idx:chr_idx],
+                'positions': ko_associations['position'][prev_idx:chr_idx],
+                'mafs': ko_associations['maf'][prev_idx:chr_idx]}
             prev_idx = chr_idx
         for key, value in thresholds.items():
             value = int(value) if key == 'total_associations' else float(value)
@@ -318,7 +367,7 @@ class StudyViewSet(viewsets.ReadOnlyModelViewSet):
                     else:
                         label = 'Non genic'
                     list_top_snp_type.append([label, i['doc_count']])
-                    response['on_snp_type'] = list_top_snp_type
+                response['on_snp_type'] = list_top_snp_type
             elif key == "maf_hist":
                 print(agg_results[key])
                 # Need to check if all consequent maf ranges are present
@@ -409,9 +458,17 @@ class PhenotypeViewSet(viewsets.ReadOnlyModelViewSet):
     #     return Response({'chromosomes': chr_dict, 'maf': maf_dict, 'mac': mac_dict, 'types': type_dict, 'annotations': annotations_dict})
 
 class AssociationViewSet(EsViewSetMixin, viewsets.ViewSet):
+    renderer_classes = tuple(api_settings.DEFAULT_RENDERER_CLASSES) + (r.CSVRenderer, )
+
     """ API for associations """
     def hide_list_fields(self, view):
         return
+
+    def retrieve(self, request, pk):
+        """ Retrieve information about a specific association """
+        association = elastic.load_associations_by_id(pk)
+        return Response(association)
+
 
     def list(self, request):
         """ List all associations sorted by score. """
@@ -425,6 +482,26 @@ class AssociationViewSet(EsViewSetMixin, viewsets.ViewSet):
         # queryset = EsQuerySet(associations, count)
         paginated_asso = self.paginate_queryset(queryset)
         return self.get_paginated_response({'results': paginated_asso, 'count': count, 'lastel': [lastel[0], lastel[1]]})
+
+    @detail_route(methods=['GET'], url_path='details')
+    def associations(self, request, pk, format=None):
+        """ Return details for a specific assocation """
+        association = elastic.load_associations_by_id(pk)
+        study_id, chr, position = pk.split('_')
+        study = Study.objects.get(pk=study_id)
+        data = get_accession_phenotype_values(study.phenotype.pk)
+        accessions = np.asarray(list(map(lambda item: item['accession_id'], data)), dtype='|S6')
+        #[:,0].astype(np.dtype('|S6'))
+        genotype_file = "%s/GENOTYPES/%s.hdf5" % (settings.HDF5_FILE_PATH, study.genotype.pk)
+        alleles, genotyped_accessions = get_snps_from_genotype(genotype_file,int(chr),int(position), int(position), accession_filter = accessions)
+        filtered_accessions_idx = np.in1d(accessions, genotyped_accessions)
+        filtered_data = []
+        for info, allele, is_genotyped in zip(data, alleles.tolist()[0], filtered_accessions_idx.tolist()):
+            if is_genotyped:
+                info['allele'] = association['snp']['alt'] if allele else association['snp']['ref']
+                filtered_data.append(info)
+        return Response(filtered_data)
+
 
     @list_route(url_path='count')
     def count(self, request):
@@ -444,6 +521,7 @@ class AssociationViewSet(EsViewSetMixin, viewsets.ViewSet):
         type_dict = _get_percentages_from_buckets(type)
         annotations_dict = _get_percentages_from_buckets(annotations)
         return Response({'chromosomes': chr_dict, 'maf': maf_dict, 'mac': mac_dict, 'types': type_dict, 'annotations': annotations_dict})
+
 
     @list_route(methods=['GET'], url_path='map_histogram')
     def data_for_histogram(self, request):
@@ -498,7 +576,7 @@ class AssociationViewSet(EsViewSetMixin, viewsets.ViewSet):
         region = request.query_params.getlist('region')
         filters['region']=(int(region[0]),int(region[1]))
         filters['region_width'] = request.query_params.get('regionwidth')
-        results = elastic.get_gwas_overview_heatmap_data(filters)
+        results = elastic.get_gwas_overview_heatmap_data(filters, len(studies))
         results['studies'] = studies_data
         return Response(results)
 
@@ -536,7 +614,7 @@ class AssociationViewSet(EsViewSetMixin, viewsets.ViewSet):
             filters['end'] = gene['positions']['lte'] + zoom
         if _is_filter_whole_dataset(filters):
             # download_name = "all_associations"
-            file_name = "%s/all_associations.csv" % (settings.HDF5_FILE_PATH)
+            file_name = "%s/all_associations.zip" % (settings.HDF5_FILE_PATH)
             chunk_size = 8192
             response = StreamingHttpResponse(FileWrapper(open(file_name, "rb"), chunk_size),
                                              content_type="text/csv")
@@ -570,6 +648,50 @@ class AssociationViewSet(EsViewSetMixin, viewsets.ViewSet):
         response['Content-Disposition'] = "attachment; filename={}.csv".format(download_name)
         return response
 
+class KOAssociationViewSet(EsViewSetMixin, viewsets.ViewSet):
+    """ API for KO associations """
+    def hide_list_fields(self, view):
+        return
+
+    def retrieve(self, request, pk):
+        """ Retrieve information about a specific association """
+        ko_association = elastic.load_ko_associations_by_id(pk)
+        return Response(ko_association)
+
+
+    def list(self, request):
+        """ List all KO associations sorted by score. """
+        filters = _get_filter_from_params(request.query_params)
+        if len(filters['significant']) == 0:
+            filters['significant'] = 'b' # TODO: change this to p once the permutations values are entered
+        last_el = request.query_params.get('lastel', '')
+        size = int(request.query_params.get('limit', 50))
+        associations, count, lastel = elastic.load_filtered_top_ko_associations_search_after(filters,last_el, size)
+        queryset = EsQuerySetLastEl(associations, count, lastel)
+        paginated_asso = self.paginate_queryset(queryset)
+        return self.get_paginated_response({'results': paginated_asso, 'count': count, 'lastel': [lastel[0], lastel[1]]})
+
+    @list_route(methods=['GET'], url_path='original_mutations')
+    def originaldownload(self, request):
+        """Download all the compressed csv files. """
+        bulk_file = "%s/ko_original_mutations.zip" % (settings.HDF5_FILE_PATH)
+        chunk_size = 8192
+        response = StreamingHttpResponse(FileWrapper(open(bulk_file,"rb"), chunk_size),content_type="application/x-zip")
+        response['Content-Length'] = os.path.getsize(bulk_file)
+        response['Content-Disposition'] = "attachment; filename=ko_original_mutations.zip"
+        return response
+
+    @list_route(methods=['GET'], url_path='bulk_download')
+    def bulkdownload(self, request):
+        """Download all the compressed csv files. """
+        bulk_file = "%s/ko_csv.zip" % (settings.HDF5_FILE_PATH)
+        chunk_size = 8192
+        response = StreamingHttpResponse(FileWrapper(open(bulk_file,"rb"), chunk_size),content_type="application/x-zip")
+        response['Content-Length'] = os.path.getsize(bulk_file)
+        response['Content-Disposition'] = "attachment; filename=ko_mutations_associations.zip"
+        return response
+
+
 class GeneViewSet(EsViewSetMixin, viewsets.ViewSet):
     """ API for genes """
 
@@ -585,6 +707,7 @@ class GeneViewSet(EsViewSetMixin, viewsets.ViewSet):
     def retrieve(self, request, pk):
         """ Retrieve information about a specific gene """
         gene = elastic.load_gene_by_id(pk)
+        gene['ko_associations'] = elastic.load_gene_ko_associations(pk, return_only_significant=True)
         return Response(gene)
 
     @list_route(methods=['GET'], url_path='autocomplete')
@@ -666,6 +789,20 @@ class GeneViewSet(EsViewSetMixin, viewsets.ViewSet):
         limit = paginator.get_limit(request)
         offset = paginator.get_offset(request)
         genes, count = elastic.load_filtered_top_genes(filters, offset, limit)
+        queryset = EsQuerySet(genes, count)
+        paginated_genes = self.paginate_queryset(queryset)
+        return self.get_paginated_response(paginated_genes)
+
+    @list_route(methods=['GET'], url_path='top_ko_list')
+    def top_ko_list(self, request):
+        """ Retrieve the top genes based on the number of significant KO mutations and provide full gene information. """
+        filters = _get_filter_from_params(request.query_params)
+        if filters['significant'] == []:
+            filters['significant'] = ['p']
+        paginator = EsPagination()
+        limit = paginator.get_limit(request)
+        offset = paginator.get_offset(request)
+        genes, count = elastic.load_filtered_top_ko_mutations_genes(filters, offset, limit)
         queryset = EsQuerySet(genes, count)
         paginated_genes = self.paginate_queryset(queryset)
         return self.get_paginated_response(paginated_genes)

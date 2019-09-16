@@ -90,6 +90,7 @@
                             v-bind:pagination.sync="pagination"
                             hide-actions
                             :loading="loading"
+                            :no-data-text="noDataText"
                             class="elevation-1 mt-2 asso-table"
 
                     >
@@ -101,7 +102,7 @@
                         <template slot="items" scope="props">
                             <tr :id="('snp' in props.item)? props.item.snp.chr + '_'+props.item.snp.position+'_' + props.item.study.id : 'missing_info'" >
                                 <td v-if="hideFields.indexOf('name') == -1" @mouseover="showAssociation(props.item)">
-                                    <div v-if="'snp' in props.item" >{{ props.item.snp.chr | capitalize }}:{{ props.item.snp.position }}</div><div v-else >Missing SNP info</div></td>
+                                    <div v-if="'snp' in props.item" ><router-link v-if="'snp' in props.item" :to="{name: 'associationDetail', params: { id: props.item.study.id, assocId: props.item.snp.chr.slice(-1) + '_'+props.item.snp.position }}">{{ props.item.snp.chr | capitalize }}:{{ props.item.snp.position }}</router-link></div><div v-else >Missing SNP info</div></td>
                                 <td v-if="hideFields.indexOf('score') == -1" v-bind:class="['text-xs-right',{'blue--text' : props.item.overPermutation}]" @mouseover="showAssociation(props.item)">{{ props.item.score | round }}</td>
                                 <td v-if="hideFields.indexOf('study') == -1" class="text-xs-right" @mouseover="showAssociation(props.item)">
                                     <router-link :to="{name: 'studyDetail', params: { id: props.item.study.id }}" >{{ props.item.study.phenotype.name }}</router-link></td>
@@ -183,6 +184,7 @@
         highlightedAssociations: Association[];
         localfilters : {};
         loading: boolean = false;
+        noDataText: string = "No data available.";
         headers = [{text: "SNP", value: "snp.chr", name: "name", align: "left", tooltip: "Name of SNP"},{text: "score", value: "score", name: "score", tooltip: "-log10(p-value)"},
             {text: "study", value: "study.name", name: "study", sortable: false, tooltip: "Study"},{text: "gene",value: "snp.geneName", name: "gene", sortable: false, tooltip: "Gene"},
             {text: "MAF",value: "maf", name: "maf", sortable: false, tooltip: "Minor Allele Frequency"},{text: "MAC",value: "mac", name: "mac", sortable: false, tooltip: "Minor Allele Count"},
@@ -318,6 +320,7 @@
         }
         loadData(pageToLoad): void {
             this.loading = true;
+            this.noDataText = "Data is loading...";
             if (this.view.name == "top-associations") {
                 // Need to check for already visited pages
                 loadTopAssociations(this.filters, pageToLoad, this.lastElementHistory[pageToLoad.toString()]).then(this._displayData);
@@ -349,6 +352,7 @@
             this.pagination.totalItems = data.count;
             this.pageCount = Math.ceil(data.count/this.pagination.rowsPerPage);
             this.loading = false;
+            this.noDataText = "No data available.";
             this.lastElement = data.lastel;
             this.$emit('loaded', this.associations);
         }

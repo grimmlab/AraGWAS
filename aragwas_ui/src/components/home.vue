@@ -73,6 +73,36 @@
                             <v-btn dark class="btn--large icon--left green lighten-1" id="hitmap-button" light  to="/map"><v-icon left dark>grain</v-icon> GWAS HitMap</v-btn>
                         </div>
                     </v-flex>
+                    <v-flex xs12 sm6 md6>
+                        <div class="icon-block">
+                            <i class="material-icons" >flash_off</i>
+                            <h5 >Top KO Mutations</h5>
+                            <p >Check out the highest-scoring KO mutations.</p>
+                            <v-btn dark class="btn--large icon--left green lighten-1" light  tag="a" to="/top-ko-mutations">
+                                <v-icon left dark>flash_off</v-icon> Top KO Mutations
+                            </v-btn>
+                        </div>
+                    </v-flex>
+                    <v-flex xs12 sm6 md6>
+                        <div class="icon-block">
+                            <i class="material-icons" >grid_off</i>
+                            <h5 >Top KO Genes</h5>
+                            <p >Check out the genes with the largest number of associated KO mutations.</p>
+                            <v-btn dark class="btn--large icon--left green lighten-1" light  tag="a" to="/top-ko-genes">
+                                <v-icon left dark>grid_off</v-icon> Top KO Genes
+                            </v-btn>
+                        </div>
+                    </v-flex>
+                    <v-flex xs12>
+                        <div class="icon-block">
+                            <i class="material-icons" >file_download</i>
+                            <h5 >Download Center</h5>
+                            <p >Download different files here.</p>
+                            <v-btn dark class="btn--large icon--left green lighten-1" light id="download-center-button" tag="a" to="/download-center" v-tooltip:left="{html: 'Download Center for AraGWAS'}">
+                                <v-icon left dark>file_download</v-icon> Download Center
+                            </v-btn>
+                        </div>
+                    </v-flex>
                 </v-layout>
             </v-container>
             <v-container grid-list-md>
@@ -104,17 +134,20 @@
                             </v-card-text>
                         </v-card>
                     </v-flex>
-                    <v-flex xs12 sm6 md4 order-md2 class="mt-5">
-                        <h5 class="black--text light"><v-icon class="green--text lighten-1 small-icon">assessment</v-icon> Quick Stats</h5>
+                    <v-flex xs12 sm6 md4 order-md3 class="mt-5">
+                        <h5 class="black--text light"><v-icon class="green--text lighten-1 small-icon">assessment</v-icon> Quick Stats</h5>                      
                         <v-card>
                             <div class="title pa-4"><v-icon class="green--text lighten-1 small-icon">assignment</v-icon> {{ nStudies }} Studies</div><v-divider></v-divider>
                             <div class="title pa-4"><v-icon class="green--text lighten-1 small-icon">local_florist</v-icon> {{ nPhenotypes }} Phenotypes</div><v-divider ></v-divider>
                             <div class="title pa-4"><v-icon class="green--text lighten-1 small-icon">swap_calls</v-icon> {{ nAssociations }} Significant associations</div>
                         </v-card>
-                    </v-flex>
-                    <v-flex xs12 sm6 md4 order-md3 class="mt-5">
-                        <h5 class=" black--text light"><v-icon class="green--text lighten-1 small-icon">data_usage</v-icon> Data</h5>
+
+                        <h5 class="pt-4 black--text light"><v-icon class="green--text lighten-1 small-icon">data_usage</v-icon> Data</h5>
                             <vue-chart :columns="plotColumns" :rows="plotRows" :options="{pieHole: 0.2, title: 'Top genes by number of high-scoring associations'}" chart-type="PieChart"></vue-chart>
+                    </v-flex>
+                    <v-flex xs12 sm6 md4 order-md2 class="mt-5">
+                        <h5 class=" black--text light"><v-icon class="green--text lighten-1 small-icon">insert_chart</v-icon> Twitter</h5>
+                            <Timeline id="aragwas" sourceType="profile" :options="{ tweetLimit: '3' }"><div class="spinner"></div></Timeline>
                     </v-flex>
                 </v-layout>
             </v-container>
@@ -201,6 +234,7 @@
 <script lang="ts">
     import Vue from "vue";
     import {Component, Prop, Watch} from "vue-property-decorator";
+    import { Timeline, Tweet } from 'vue-tweet-embed';
 
     import {search, loadPhenotypes, loadStudies, loadAssociationCount, loadTopGenes} from '../api';
     import LineChart from "../components/linechart.vue";
@@ -218,6 +252,7 @@
       },
       components: {
           "line-chart": LineChart,
+          "Timeline": Timeline,
       },
       mixins: [tourMixin]
     })
@@ -265,12 +300,16 @@
           intro: "The global search form allows the user to search across all phenotypes, studies and genomic regions"
         },
         {
+          element: "#download-center-button",
+          intro: "You can find several download options in the download center"
+        },
+        {
           element: "#studies-button",
           intro: "You can access the list of available GWA studies by clicking here"
         },
         {
           element: "#top-genes-button",
-          intro: "To see the the genes with most associations, press here."
+          intro: "To see the the genes with most associations, press here"
         },
         {
           element: "#hitmap-button",

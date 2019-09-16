@@ -1,9 +1,10 @@
 from __future__ import absolute_import, unicode_literals
-import os, json
+import os, json, time
 from celery.utils.log import get_task_logger
 logger = get_task_logger(__name__)
 from celery import shared_task
 from celery.task import periodic_task
+from celery.utils.log import get_task_logger
 from datetime import timedelta
 import h5py, numpy
 from gwasdb.models import Study
@@ -11,8 +12,15 @@ from gwasdb import elastic
 from gwasdb import hdf5
 from aragwas import settings
 from gwasdb import es2csv
+from pathlib import Path
 import glob
 
+logger = get_task_logger(__name__)
+
+def _check_modifed(abs_filename):
+    if not os.path.exists(abs_filename) or not os.path.exists('%s.run' % abs_filename):
+        return True
+    return False
 
 @shared_task
 def debug_task():
@@ -28,31 +36,73 @@ def clean_temp_files():
 
 @shared_task
 def generate_hitmap_json():
+    abs_filename = os.path.join(settings.HDF5_FILE_PATH,"heatmap_data.json")
+    if not _check_modifed(abs_filename):
+        logger.info('Hitmap already up2date. Skipping generation')
+        return
+    Path('%s.run' % abs_filename).touch()
     studies = Study.objects.all()
     studies_data = []
     for study in studies:
         studies_data.append(
             {'id': study.id, 'name': study.phenotype.name})  # For now only add phenotype name for shorted strings
+    num_studies = len(studies)
     filters = dict()
-    results = elastic.get_gwas_overview_heatmap_data(filters)
+    results = elastic.get_gwas_overview_heatmap_data(filters, num_studies)
     results['studies'] = studies_data
-    file_name = "%s/heatmap_data.json" % (settings.HDF5_FILE_PATH)
-    with open(file_name, 'w') as out_file:
+    with open('%s.tmp' % abs_filename, 'w') as out_file:
         json.dump(results, out_file)
+    os.rename('%s.tmp' % abs_filename, abs_filename)
+    logger.info('Finished generating hitmap')
 
 @shared_task
 def generate_associations_csv():
+    abs_filename = "all_associations.zp"
+    if not _check_modifed(abs_filename):
+        logger.info('Assocation zip file already up2date. Skipping generation')
+        return
+    Path('%s.run' % abs_filename).touch()
     es2csv.generate_all_associations_file()
+    logger.info('Finished generating association csv')
+
+
 
 @shared_task
 def index_study(study_id, perm_threshold=None):
     study = Study.objects.get(pk=study_id)
     """ used to index a study in elasticseach """
-    hdf5_file = os.path.join(settings.HDF5_FILE_PATH,'%s.hdf5' %  study.pk)
+    hdf5_file = os.path.join(settings.HDF5_FILE_PATH,'gwas_results', '%s.hdf5' %  study.pk)
     top_associations, thresholds = hdf5.get_top_associations(hdf5_file, val=1e-4, top_or_threshold='threshold',maf=0)
+    logger.info('Retrieved top associations from GWAS %s' % study_id)
     if perm_threshold:
         thresholds['permutation_threshold'] = perm_threshold
-    return elastic.index_associations(study, top_associations, thresholds)
+    indexed_assoc, failed_assoc = elastic.index_associations(study, top_associations, thresholds)
+    if failed_assoc > 0:
+       logger.error('Following associations failed to index for "%s" in elasticsearch' % (failed_assoc, indexed_assoc + failed_assoc, study_id))
+    elif indexed_assoc == 0:
+        logger.warn('No associations found that match the threshold. Skipping "%s" in elasticsearch' % study_id)
+    else:
+        logger.info('Successfully indexed all %s assocations for "%s" in elasticsearch.' % (indexed_assoc, study_id))
+    return (indexed_assoc, failed_assoc), study_id
+
+@shared_task
+def index_ko_associations(study_id, perm_threshold=None):
+    study = Study.objects.get(pk=study_id)
+    """ used to index a study in elasticsearch """
+    csv_file = os.path.join(settings.HDF5_FILE_PATH,'ko', 'LOS%s.csv' %  study.pk)
+    logger.info('Retrieved top ko_associations from GWAS %s' % study_id)
+    # Load all scores, betas and se
+    associations, thresholds = hdf5.get_ko_associations(csv_file)
+    if perm_threshold:
+        thresholds['permutation_threshold'] = perm_threshold
+    indexed_assoc, failed_assoc = elastic.index_ko_associations(study, associations, thresholds)
+    if failed_assoc > 0:
+       logger.error('Following ko_associations failed to index for "%s" in elasticsearch' % (failed_assoc, indexed_assoc + failed_assoc, study_id))
+    elif indexed_assoc == 0:
+        logger.warn('No ko_associations found that match the threshold. Skipping "%s" in elasticsearch' % study_id)
+    else:
+        logger.info('Successfully indexed all %s ko_assocations for "%s" in elasticsearch.' % (indexed_assoc, study_id))
+    return (indexed_assoc, failed_assoc), study_id
 
 @shared_task
 def download_es2csv(opts, filters):

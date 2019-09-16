@@ -12,7 +12,11 @@ import re
 import operator
 import datetime
 
+from collections import defaultdict
+
 GENE_ID_PATTERN = re.compile('^[a-z]{2}([\\d]{1})G\\w+$', re.IGNORECASE)
+es_logger = logging.getLogger('elasticsearch')
+es_logger.setLevel(logging.WARNING)
 
 # Get an instance of a logger
 logger = logging.getLogger(__name__)
@@ -103,7 +107,30 @@ def load_gene_by_id(id):
         raise Exception('Gene with ID %s not found' %id)
     gene = doc['_source']
     gene['id'] = doc['_id']
+    # # Potentially, load KO associated phenos if any
+    # if return_KOs:
+    #     # check if gene has any associated phenotypes
+    #     pass
     return gene
+
+
+def load_associations_by_id(id):
+    """Retrieve an association by id"""
+    doc = es.get('aragwas', id, doc_type='associations', _source=['overFDR','overPermutation','overPermutation','maf','mac','score', 'snp', 'study'], realtime=False)
+    if not doc['found']:
+        raise Exception('Associations with ID %s not found' %id)
+    association = doc['_source']
+    association['id'] = doc['_id']
+    return association
+
+def load_ko_associations_by_id(id):
+    """Retrieve a KO mutation by id"""
+    doc = es.get('aragwas', id, doc_type='ko_associations', _source=['overPermutation','overBonferroni','maf','mac','score', 'gene', 'study'], realtime=False)
+    if not doc['found']:
+        raise Exception('Associations with ID %s not found' %id)
+    association = doc['_source']
+    association['id'] = doc['_id']
+    return association
 
 def load_gene_associations(id):
     """Retrive associations by neighboring gene id"""
@@ -164,6 +191,36 @@ def load_filtered_top_genes(filters, start=0, size=50):
         genes.append(gene)
     return genes, len(top_genes)
 
+def load_filtered_top_ko_mutations_genes(filters, start=0, size=50):
+    """Retrieves top genes according to number of KO mutations and filter them through the tickable options"""
+    # First aggregate over associations
+    s = Search(using=es, doc_type='ko_associations')
+    if 'chr' in filters and len(filters['chr']) > 0 and len(filters['chr']) < 5:
+        s = s.filter(Q('bool', should=[Q({'nested':{'path':'gene', 'query':{'match':{'gene.chr':chrom if len(chrom) > 3 else 'chr%s' % chrom}}}}) for chrom in
+                                       filters['chr']]))
+    if 'significant' in filters:
+        s = s.filter(Q('range', mac={'gte': 6}))
+        s = s.filter('term', overBonferroni='T') # TODO: change this to permutation once the new indexed scores are in.
+
+    agg = A("terms", field="gene.id", size='33341') # Need to check ALL GENES for further lists
+    s.aggs.bucket('genes', 'nested', path='gene').bucket('gene_count', agg) # Need to have a NESTED query
+    top_genes = s.execute().aggregations.genes.gene_count.buckets
+    # The KO associations are already retrieved, just need to assign them to the right gene.
+    association_dict = defaultdict(list)
+    for asso in s[0:s.count()].execute().to_dict()['hits']['hits']:
+        association_dict[asso['_source']['gene']['name']].append(asso['_source'])
+    genes = []
+    for top in top_genes[start:start+size]:
+        id = top['key']
+        matches = GENE_ID_PATTERN.match(id)
+        if not matches:
+            continue
+        gene = load_gene_by_id(top['key'])
+        gene['n_hits'] = top['doc_count']
+        gene['ko_associations'] = association_dict[top['key']]
+        genes.append(gene)
+    return genes, len(top_genes)
+
 def get_top_genes_aggregated_filtered_statistics(filters):
     s = Search(using=es, doc_type='genes')
     if 'chr' in filters and len(filters['chr']) > 0 and len(filters['chr']) < 5:
@@ -206,7 +263,10 @@ def load_genes_by_region(chrom, start, end, features):
     search_genes = Search().using(es).doc_type('genes').index(index).filter("range", positions={"lte": end, "gte":start})
     if not features:
         search_genes.source(exclude=['isoforms'])
-    return [gene.to_dict() for gene in search_genes.scan() ]
+    genes = [gene.to_dict() for gene in search_genes.scan() ]
+    for gene in genes:
+        gene['ko_associations'] = load_gene_ko_associations(gene['name'], return_only_significant=True)
+    return genes
 
 
 def filter_association_search(s, filters):
@@ -326,10 +386,39 @@ def load_filtered_top_associations_search_after(filters, search_after = ''):
     print(json.dumps(s.to_dict()))
     result = s.execute()
     associations = result['hits']['hits']
+    last_el = ('','')
+    if len(associations) > 0:
+        last_el = result['hits']['hits'][-1]['sort']
+    # Transformation needed to saveguard url transmition
+        last_el[1] = "-".join(last_el[1].split('#'))
+    return [association['_source'].to_dict() for association in associations], result['hits']['total'], last_el
+
+def load_filtered_top_ko_associations_search_after(filters, search_after = '', size=50):
+    """Retrieves top associations and filter them through the tickable options"""
+    s = Search(using=es, doc_type='ko_associations')
+    s = s.sort('-score', '_uid')
+    # By default, leave out associations with no gene
+    s = s.filter(Q({'nested':{'path':'gene', 'query':{'exists':{'field':'gene.chr'}}}}))
+
+    # # Only need to filter by chromosome, maf or mac
+    if 'chr' in filters and len(filters['chr']) > 0 and len(filters['chr']) < 5:
+        s = s.filter(Q('bool', should=[Q({'nested':{'path':'gene', 'query':{'match':{'gene.chr':chrom if len(chrom) > 3 else 'chr%s' % chrom}}}}) for chrom in
+                                       filters['chr']]))
+    if 'significant' in filters:
+        s = s.filter(Q('range', mac={'gte': 6}))
+        s = s.filter('term', overBonferroni='T') # TODO: change this to permutation once the new indexed scores are in.
+    if search_after != '':
+        search_after = parse_lastel(search_after)
+        print(search_after)
+        s = s.extra(search_after=search_after)
+    s = s[0:size]
+    result = s.execute()
+    associations = result['hits']['hits']
     last_el = result['hits']['hits'][-1]['sort']
     # Transformation needed to saveguard url transmition
     last_el[1] = "-".join(last_el[1].split('#'))
     return [association['_source'].to_dict() for association in associations], result['hits']['total'], last_el
+
 
 def get_gwas_overview_bins_data(filters):
     """Collect the data used to plot the gwas heatmap histograms"""
@@ -351,7 +440,7 @@ def get_gwas_overview_bins_data(filters):
     # Get study list
     return {"type":"top", "data":combined_data}
 
-def get_gwas_overview_heatmap_data(filters):
+def get_gwas_overview_heatmap_data(filters, num_studies):
     """Collect the data used to plot the gwas heatmap"""
     # Check missing filters
     filters = check_missing_filters(filters)
@@ -362,14 +451,14 @@ def get_gwas_overview_heatmap_data(filters):
         for i in range(1,6):
             chr = 'chr' + str(i)
             filters['chrom'] = chr
-            max_score_temp, data_temp = get_top_hits_for_all_studies(filters) # TODO: link parameters from rest endpoint
+            max_score_temp, data_temp = get_top_hits_for_all_studies(filters, num_studies) # TODO: link parameters from rest endpoint
             max_score[chr]=max_score_temp[chr]
             data[chr] = data_temp[chr]
         # Aggregate over chromosomes
         combined_data = combine_data(max_score, data) # For testing: change to data_bis to get faster but more localized points (looks bad)
     else:
         chr = 'chr'+str(filters['chrom'][-1])
-        max_score_temp, data_temp = get_top_hits_for_all_studies(filters)  # TODO: link parameters from rest endpoint
+        max_score_temp, data_temp = get_top_hits_for_all_studies(filters, num_studies)  # TODO: link parameters from rest endpoint
         max_score[chr] = max_score_temp[chr]
         data[chr] = data_temp[chr]
         combined_data = combine_data(max_score, data, region=filters['region'],region_width=filters['region_width'])
@@ -391,7 +480,7 @@ def check_missing_filters(filters):
         filters['mac'] = 6
     return filters
 
-def get_top_hits_for_all_studies(filters):
+def get_top_hits_for_all_studies(filters, num_studies):
     s = Search(using=es, doc_type='associations')
     s = filter_heatmap_search(s, filters)
     # First aggregate for studies
@@ -399,7 +488,7 @@ def get_top_hits_for_all_studies(filters):
     # Keep track of the maximum value for each study
     s.aggs['per_chrom'].metric('max', 'max', field='score')
     # Then aggregate for chromosomes
-    s.aggs['per_chrom'].bucket('per_study', 'terms', field='study.id', order={'_term':'asc'}, size='200',min_doc_count='0') #TODO: automatically check number of studies
+    s.aggs['per_chrom'].bucket('per_study', 'terms', field='study.id', order={'_term':'asc'}, size=num_studies,min_doc_count='0') #TODO: automatically check number of studies
     s.aggs['per_chrom']['per_study'].metric('top_N', 'top_hits', size='25', sort={'score':'desc'}, _source=['-score','snp.position'])
     # Then for regions (to avoid too many overlapping hits)
     s.aggs['per_chrom']['per_study'].bucket('per_region', 'histogram', field='snp.position', interval=str(filters['region_width']))
@@ -535,3 +624,51 @@ def _get_index_from_chr(chrom):
     else:
         index = index % 'chr' + chrom
     return index
+
+# Need to index KO genes association differently.
+
+def index_ko_associations(study, associations, thresholds):
+    """
+    indexes gene knockout associations
+
+    They are stored differently cause they represent associations between genes and phenotypes
+    """
+    with_permutations = 'permutation_threshold' in thresholds.keys() and thresholds['permutation_threshold'] # This will always be FALSE
+    thresholds_study = [{'name': key, 'value': val} for key, val in thresholds.items() ]
+    annotations = {}
+    documents = []
+    for assoc in associations:
+        _id = '%s_%s' % (study.pk, assoc['gene'])
+        study_data = serializers.EsStudySerializer(study).data
+        study_data['thresholds'] = thresholds_study
+        _source = {'mac': int(assoc['mac']), 'maf': float(assoc['maf']), 'score': float(assoc['score']), 'beta': float(assoc['beta']),
+            'se_beta': float(assoc['se_beta']), 'created': datetime.datetime.now(),'study':study_data}
+        _source['overBonferroni'] = bool(assoc['score'] > thresholds['bonferroni_threshold05'])
+        if with_permutations:
+            _source['overPermutation'] = bool(assoc['score'] > thresholds['permutation_threshold'])
+        try:
+            gene = load_gene_by_id(assoc['gene'])
+        except:
+            gene = {'name': assoc['gene']}
+        _source['gene'] = gene
+        documents.append({'_index':'aragwas','_type':'ko_associations','_id': _id, '_source': _source })
+    if len(documents) == 0:
+        return 0,0
+    success, errors = helpers.bulk(es,documents, chunk_size=1000, stats_only=True)
+    return success, errors
+
+def load_gene_ko_associations(id, return_only_significant=False):
+    """Retrieve KO associations by gene id"""
+    matches = GENE_ID_PATTERN.match(id)
+    if not matches:
+        raise Exception('Wrong Gene ID %s' % id)
+    chrom = matches.group(1)
+    asso_search = Search(using=es).doc_type('ko_associations')
+    if return_only_significant:
+        asso_search = asso_search.filter('term', overBonferroni='T')
+#     q = Q('bool', should=Q('term',gene__name = id))
+    q = Q({'nested':{'path':'gene', 'query':{'match':{'gene.name':id}}}})
+    asso_search = asso_search.filter(q).sort('-score').source(exclude=['gene'])
+    results = asso_search[0:min(500, asso_search.count())].execute()
+    ko_associations = results.to_dict()['hits']['hits']
+    return [association['_source'] for association in ko_associations]
